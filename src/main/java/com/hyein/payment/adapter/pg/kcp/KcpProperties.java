@@ -4,6 +4,7 @@ public record KcpProperties(
         String siteCode,
         String checkoutUrl,
         String approveUrl,
-        String cancelUrl
+        String cancelUrl,
+        String webhookUrl
 ) {
 }

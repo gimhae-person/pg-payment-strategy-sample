@@ -4,6 +4,7 @@ public record TossProperties(
         String clientKey,
         String checkoutUrl,
         String approveUrl,
-        String cancelUrl
+        String cancelUrl,
+        String webhookUrl
 ) {
 }

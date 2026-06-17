@@ -18,8 +18,9 @@ import com.hyein.payment.port.in.ApprovePaymentCommand;
 import com.hyein.payment.port.in.CancelPaymentCommand;
 import com.hyein.payment.port.in.CreatePaymentCommand;
 import com.hyein.payment.port.in.CreatePaymentResult;
+import com.hyein.payment.port.in.HandleWebhookCommand;
 import com.hyein.payment.port.out.CancelReason;
-import com.hyein.payment.port.out.PgAuthResult;
+import com.hyein.payment.port.out.PgApprovalPayload;
 
 import java.util.List;
 import java.util.Map;
@@ -28,6 +29,7 @@ public final class PaymentStrategyTestRunner {
     public static void main(String[] args) {
         createsCheckoutSessionWithSelectedGateway();
         approvesKcpPaymentWithoutConcreteDependencyInService();
+        reconcilesPaymentWithWebhook();
         cancelsInicisPayment();
         rejectsDuplicateGatewayRegistration();
         System.out.println("All tests passed");
@@ -39,11 +41,16 @@ public final class PaymentStrategyTestRunner {
                 "order-kcp-1",
                 PgCompany.KCP,
                 PaymentMethod.CARD,
-                Money.krw(10000)
+                Money.krw(10000),
+                "김결제",
+                "01011112222",
+                "https://frontend.example/success",
+                "https://frontend.example/fail"
         ));
 
         assertEquals("https://kcp.example/checkout", result.checkoutSession().actionUrl());
         assertEquals("KCP", result.checkoutSession().formFields().get("pg"));
+        assertEquals("김결제", result.checkoutSession().formFields().get("buyr_name"));
         assertEquals(1, fixture.publisher.events().size());
     }
 
@@ -53,16 +60,51 @@ public final class PaymentStrategyTestRunner {
                 "order-kcp-2",
                 PgCompany.KCP,
                 PaymentMethod.CARD,
-                Money.krw(25000)
+                Money.krw(25000),
+                "김결제",
+                "01011112222",
+                "https://frontend.example/success",
+                "https://frontend.example/fail"
         ));
 
         Payment approved = fixture.service.approvePayment(new ApprovePaymentCommand(
                 created.paymentId(),
-                new PgAuthResult(Map.of("approval_key", "approval", "trace_no", "trace"))
+                new PgApprovalPayload(Map.of("approval_key", "approval", "trace_no", "trace"))
         ));
 
         assertEquals(PaymentStatus.APPROVED, approved.status());
         assertTrue(approved.pgTransactionId().startsWith("KCP-"), "KCP transaction id should be returned");
+    }
+
+    private static void reconcilesPaymentWithWebhook() {
+        Fixture fixture = fixture();
+        CreatePaymentResult created = fixture.service.createPayment(new CreatePaymentCommand(
+                "order-kcp-3",
+                PgCompany.KCP,
+                PaymentMethod.CARD,
+                Money.krw(15000),
+                "김웹훅",
+                "01033334444",
+                "https://frontend.example/success",
+                "https://frontend.example/fail"
+        ));
+
+        Payment approved = fixture.service.approvePayment(new ApprovePaymentCommand(
+                created.paymentId(),
+                new PgApprovalPayload(Map.of("approval_key", "approval", "trace_no", "trace"))
+        ));
+
+        Payment reconciled = fixture.service.handleWebhook(new HandleWebhookCommand(
+                PgCompany.KCP,
+                Map.of("X-KCP-SIGNATURE", "sample"),
+                Map.of(
+                        "orderId", "order-kcp-3",
+                        "transactionId", approved.pgTransactionId(),
+                        "status", "APPROVED"
+                )
+        ));
+
+        assertEquals(PaymentStatus.APPROVED, reconciled.status());
     }
 
     private static void cancelsInicisPayment() {
@@ -71,12 +113,16 @@ public final class PaymentStrategyTestRunner {
                 "order-inicis-1",
                 PgCompany.INICIS,
                 PaymentMethod.CARD,
-                Money.krw(33000)
+                Money.krw(33000),
+                "이니시스유저",
+                "01055556666",
+                "https://frontend.example/success",
+                "https://frontend.example/fail"
         ));
 
         Payment approved = fixture.service.approvePayment(new ApprovePaymentCommand(
                 created.paymentId(),
-                new PgAuthResult(Map.of("authToken", "token", "authUrl", "https://auth.example"))
+                new PgApprovalPayload(Map.of("authToken", "token", "authUrl", "https://auth.example"))
         ));
         Payment cancelled = fixture.service.cancelPayment(new CancelPaymentCommand(
                 approved.id(),
@@ -107,7 +153,8 @@ public final class PaymentStrategyTestRunner {
                 "T0000",
                 "https://kcp.example/checkout",
                 "https://kcp.example/approve",
-                "https://kcp.example/cancel"
+                "https://kcp.example/cancel",
+                "https://api.example.com/payments/webhooks/kcp"
         ), new FakePgHttpClient());
     }
 
@@ -118,7 +165,8 @@ public final class PaymentStrategyTestRunner {
                 "https://inicis.example/checkout",
                 "https://inicis.example/approve",
                 "https://inicis.example/cancel",
-                "https://inicis.example/net-cancel"
+                "https://inicis.example/net-cancel",
+                "https://api.example.com/payments/webhooks/inicis"
         ), new FakePgHttpClient());
     }
 

@@ -1,8 +1,8 @@
 package com.hyein.payment.port.in;
 
-import com.hyein.payment.port.out.PgAuthResult;
+import com.hyein.payment.port.out.PgApprovalPayload;
 
 import java.util.UUID;
 
-public record ApprovePaymentCommand(UUID paymentId, PgAuthResult authResult) {
+public record ApprovePaymentCommand(UUID paymentId, PgApprovalPayload approvalPayload) {
 }
