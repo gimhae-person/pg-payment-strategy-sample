@@ -10,7 +10,9 @@ import com.hyein.payment.port.out.CancelReason;
 import com.hyein.payment.port.out.CancelResult;
 import com.hyein.payment.port.out.CheckoutSession;
 import com.hyein.payment.port.out.PaymentGateway;
-import com.hyein.payment.port.out.PgAuthResult;
+import com.hyein.payment.port.out.PgApprovalPayload;
+import com.hyein.payment.port.out.WebhookPayload;
+import com.hyein.payment.port.out.WebhookResult;
 
 import java.util.Map;
 
@@ -31,31 +33,48 @@ public final class KcpPaymentGateway implements PaymentGateway {
     @Override
     public CheckoutSession createCheckoutSession(Payment payment) {
         String signature = PgSignature.sha256(properties.siteCode() + payment.orderId() + payment.amount().amount());
-        return new CheckoutSession(properties.checkoutUrl(), Map.of(
-                "pg", company().name(),
-                "site_cd", properties.siteCode(),
-                "ordr_idxx", payment.orderId(),
-                "good_mny", payment.amount().amount().toPlainString(),
-                "currency", payment.amount().currency().getCurrencyCode(),
-                "pay_method", payment.method().name(),
-                "signature", signature
-        ));
+        return new CheckoutSession(properties.checkoutUrl(), Map.ofEntries(
+                Map.entry("pg", company().name()),
+                Map.entry("site_cd", properties.siteCode()),
+                Map.entry("ordr_idxx", payment.orderId()),
+                Map.entry("good_mny", payment.amount().amount().toPlainString()),
+                Map.entry("currency", payment.amount().currency().getCurrencyCode()),
+                Map.entry("pay_method", payment.method().name()),
+                Map.entry("buyr_name", payment.customerName()),
+                Map.entry("buyr_tel1", payment.customerPhone()),
+                Map.entry("Ret_URL", payment.successRedirectUrl()),
+                Map.entry("failUrl", payment.failRedirectUrl()),
+                Map.entry("webhookUrl", properties.webhookUrl()),
+                Map.entry("signature", signature)
+        ), payment.successRedirectUrl(), payment.failRedirectUrl());
     }
 
     @Override
-    public ApprovalResult approve(Payment payment, PgAuthResult authResult) {
+    public ApprovalResult approve(Payment payment, PgApprovalPayload approvalPayload) {
         Map<String, String> form = Map.of(
                 "pg", company().name(),
                 "site_cd", properties.siteCode(),
                 "ordr_idxx", payment.orderId(),
-                "approval_key", authResult.required("approval_key"),
-                "trace_no", authResult.required("trace_no")
+                "approval_key", approvalPayload.required("approval_key"),
+                "trace_no", approvalPayload.required("trace_no")
         );
         PgHttpResponse response = httpClient.postForm(properties.approveUrl(), form);
         if (!response.success()) {
             throw new IllegalStateException("KCP approval failed: " + response.rawBody());
         }
-        return new ApprovalResult(response.transactionId(), response.rawBody());
+        return new ApprovalResult(response.transactionId(), response.rawBody(), true);
+    }
+
+    @Override
+    public WebhookResult parseWebhook(WebhookPayload webhookPayload) {
+        String orderId = webhookPayload.requiredBody("orderId");
+        String transactionId = webhookPayload.requiredBody("transactionId");
+        String status = webhookPayload.requiredBody("status");
+        return new WebhookResult(orderId, transactionId, switch (status) {
+            case "APPROVED" -> com.hyein.payment.domain.PaymentStatus.APPROVED;
+            case "CANCELLED" -> com.hyein.payment.domain.PaymentStatus.CANCELLED;
+            default -> com.hyein.payment.domain.PaymentStatus.FAILED;
+        }, webhookPayload.body().toString());
     }
 
     @Override

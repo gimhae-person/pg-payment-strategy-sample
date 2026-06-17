@@ -19,7 +19,8 @@ import com.hyein.payment.domain.PgCompany;
 import com.hyein.payment.port.in.ApprovePaymentCommand;
 import com.hyein.payment.port.in.CreatePaymentCommand;
 import com.hyein.payment.port.in.CreatePaymentResult;
-import com.hyein.payment.port.out.PgAuthResult;
+import com.hyein.payment.port.in.HandleWebhookCommand;
+import com.hyein.payment.port.out.PgApprovalPayload;
 
 import java.util.List;
 import java.util.Map;
@@ -32,17 +33,32 @@ public final class PaymentStrategyDemo {
                 "verification-20260425-0001",
                 PgCompany.KCP,
                 PaymentMethod.CARD,
-                Money.krw(55000)
+                Money.krw(55000),
+                "홍길동",
+                "01012341234",
+                "https://frontend.example/payments/success",
+                "https://frontend.example/payments/fail"
         ));
 
         Payment approved = paymentService.approvePayment(new ApprovePaymentCommand(
                 created.paymentId(),
-                new PgAuthResult(Map.of("approval_key", "kcp-auth-key", "trace_no", "trace-001"))
+                new PgApprovalPayload(Map.of("approval_key", "kcp-auth-key", "trace_no", "trace-001"))
+        ));
+
+        Payment reconciled = paymentService.handleWebhook(new HandleWebhookCommand(
+                PgCompany.KCP,
+                Map.of("X-KCP-SIGNATURE", "sample"),
+                Map.of(
+                        "orderId", "verification-20260425-0001",
+                        "transactionId", approved.pgTransactionId(),
+                        "status", "APPROVED"
+                )
         ));
 
         System.out.println("checkoutUrl=" + created.checkoutSession().actionUrl());
-        System.out.println("paymentStatus=" + approved.status());
-        System.out.println("pgTransactionId=" + approved.pgTransactionId());
+        System.out.println("frontendSuccessUrl=" + created.checkoutSession().successRedirectUrl());
+        System.out.println("paymentStatus=" + reconciled.status());
+        System.out.println("pgTransactionId=" + reconciled.pgTransactionId());
     }
 
     public static PaymentService paymentService() {
@@ -52,7 +68,8 @@ public final class PaymentStrategyDemo {
                         "T0000",
                         "https://testpay.kcp.co.kr/checkout",
                         "https://testpay.kcp.co.kr/approve",
-                        "https://testpay.kcp.co.kr/cancel"
+                        "https://testpay.kcp.co.kr/cancel",
+                        "https://api.example.com/payments/webhooks/kcp"
                 ), httpClient),
                 new InicisPaymentGateway(new InicisProperties(
                         "INIpayTest",
@@ -60,13 +77,15 @@ public final class PaymentStrategyDemo {
                         "https://stgstdpay.inicis.com/checkout",
                         "https://stgstdpay.inicis.com/api/payAuth",
                         "https://stgstdpay.inicis.com/api/cancel",
-                        "https://stgstdpay.inicis.com/api/netCancel"
+                        "https://stgstdpay.inicis.com/api/netCancel",
+                        "https://api.example.com/payments/webhooks/inicis"
                 ), httpClient),
                 new TossPaymentsGateway(new TossProperties(
                         "test_ck_client_key",
                         "https://pay.toss.im/checkout",
                         "https://api.tosspayments.com/v1/payments/confirm",
-                        "https://api.tosspayments.com/v1/payments/cancel"
+                        "https://api.tosspayments.com/v1/payments/cancel",
+                        "https://api.example.com/payments/webhooks/toss"
                 ), httpClient)
         ));
 

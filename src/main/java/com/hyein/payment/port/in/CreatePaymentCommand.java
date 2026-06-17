@@ -8,6 +8,10 @@ public record CreatePaymentCommand(
         String orderId,
         PgCompany pgCompany,
         PaymentMethod method,
-        Money amount
+        Money amount,
+        String customerName,
+        String customerPhone,
+        String successRedirectUrl,
+        String failRedirectUrl
 ) {
 }

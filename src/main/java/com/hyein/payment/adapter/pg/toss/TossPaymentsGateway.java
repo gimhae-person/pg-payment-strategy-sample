@@ -9,7 +9,9 @@ import com.hyein.payment.port.out.CancelReason;
 import com.hyein.payment.port.out.CancelResult;
 import com.hyein.payment.port.out.CheckoutSession;
 import com.hyein.payment.port.out.PaymentGateway;
-import com.hyein.payment.port.out.PgAuthResult;
+import com.hyein.payment.port.out.PgApprovalPayload;
+import com.hyein.payment.port.out.WebhookPayload;
+import com.hyein.payment.port.out.WebhookResult;
 
 import java.util.Map;
 
@@ -34,15 +36,20 @@ public final class TossPaymentsGateway implements PaymentGateway {
                 "clientKey", properties.clientKey(),
                 "orderId", payment.orderId(),
                 "amount", payment.amount().amount().toPlainString(),
-                "currency", payment.amount().currency().getCurrencyCode()
-        ));
+                "currency", payment.amount().currency().getCurrencyCode(),
+                "customerName", payment.customerName(),
+                "customerMobilePhone", payment.customerPhone(),
+                "successUrl", payment.successRedirectUrl(),
+                "failUrl", payment.failRedirectUrl(),
+                "webhookUrl", properties.webhookUrl()
+        ), payment.successRedirectUrl(), payment.failRedirectUrl());
     }
 
     @Override
-    public ApprovalResult approve(Payment payment, PgAuthResult authResult) {
+    public ApprovalResult approve(Payment payment, PgApprovalPayload approvalPayload) {
         Map<String, String> form = Map.of(
                 "pg", company().name(),
-                "paymentKey", authResult.required("paymentKey"),
+                "paymentKey", approvalPayload.required("paymentKey"),
                 "orderId", payment.orderId(),
                 "amount", payment.amount().amount().toPlainString()
         );
@@ -50,7 +57,19 @@ public final class TossPaymentsGateway implements PaymentGateway {
         if (!response.success()) {
             throw new IllegalStateException("TossPayments approval failed: " + response.rawBody());
         }
-        return new ApprovalResult(response.transactionId(), response.rawBody());
+        return new ApprovalResult(response.transactionId(), response.rawBody(), true);
+    }
+
+    @Override
+    public WebhookResult parseWebhook(WebhookPayload webhookPayload) {
+        String orderId = webhookPayload.requiredBody("orderId");
+        String transactionId = webhookPayload.requiredBody("transactionId");
+        String status = webhookPayload.requiredBody("status");
+        return new WebhookResult(orderId, transactionId, switch (status) {
+            case "APPROVED" -> com.hyein.payment.domain.PaymentStatus.APPROVED;
+            case "CANCELLED" -> com.hyein.payment.domain.PaymentStatus.CANCELLED;
+            default -> com.hyein.payment.domain.PaymentStatus.FAILED;
+        }, webhookPayload.body().toString());
     }
 
     @Override

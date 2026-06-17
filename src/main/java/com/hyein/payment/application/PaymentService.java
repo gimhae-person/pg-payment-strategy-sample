@@ -6,12 +6,15 @@ import com.hyein.payment.port.in.ApprovePaymentCommand;
 import com.hyein.payment.port.in.CancelPaymentCommand;
 import com.hyein.payment.port.in.CreatePaymentCommand;
 import com.hyein.payment.port.in.CreatePaymentResult;
+import com.hyein.payment.port.in.HandleWebhookCommand;
 import com.hyein.payment.port.out.ApprovalResult;
 import com.hyein.payment.port.out.CancelResult;
 import com.hyein.payment.port.out.CheckoutSession;
 import com.hyein.payment.port.out.PaymentEventPublisher;
 import com.hyein.payment.port.out.PaymentGateway;
 import com.hyein.payment.port.out.PaymentRepository;
+import com.hyein.payment.port.out.WebhookPayload;
+import com.hyein.payment.port.out.WebhookResult;
 
 import java.util.Map;
 import java.util.UUID;
@@ -32,7 +35,16 @@ public final class PaymentService {
     }
 
     public CreatePaymentResult createPayment(CreatePaymentCommand command) {
-        Payment payment = Payment.request(command.orderId(), command.pgCompany(), command.method(), command.amount());
+        Payment payment = Payment.request(
+                command.orderId(),
+                command.pgCompany(),
+                command.method(),
+                command.amount(),
+                command.customerName(),
+                command.customerPhone(),
+                command.successRedirectUrl(),
+                command.failRedirectUrl()
+        );
         paymentRepository.save(payment);
 
         PaymentGateway gateway = gatewayRegistry.get(payment.pgCompany());
@@ -42,7 +54,9 @@ public final class PaymentService {
         paymentRepository.save(payment);
         eventPublisher.publish(PaymentEvent.of(payment, "PAYMENT_CHECKOUT_CREATED", Map.of(
                 "pgCompany", payment.pgCompany().name(),
-                "actionUrl", checkoutSession.actionUrl()
+                "actionUrl", checkoutSession.actionUrl(),
+                "successRedirectUrl", checkoutSession.successRedirectUrl(),
+                "failRedirectUrl", checkoutSession.failRedirectUrl()
         )));
 
         return new CreatePaymentResult(payment.id(), checkoutSession);
@@ -53,12 +67,13 @@ public final class PaymentService {
         PaymentGateway gateway = gatewayRegistry.get(payment.pgCompany());
 
         try {
-            ApprovalResult approvalResult = gateway.approve(payment, command.authResult());
+            ApprovalResult approvalResult = gateway.approve(payment, command.approvalPayload());
             payment.approve(approvalResult.pgTransactionId());
             paymentRepository.save(payment);
             eventPublisher.publish(PaymentEvent.of(payment, "PAYMENT_APPROVED", Map.of(
-                    "pgCompany", payment.pgCompany().name(),
-                    "pgTransactionId", approvalResult.pgTransactionId()
+                "pgCompany", payment.pgCompany().name(),
+                "pgTransactionId", approvalResult.pgTransactionId(),
+                "confirmedBy", approvalResult.awaitingWebhookConfirmation() ? "client+webhook" : "client"
             )));
             return payment;
         } catch (RuntimeException exception) {
@@ -82,6 +97,29 @@ public final class PaymentService {
         eventPublisher.publish(PaymentEvent.of(payment, "PAYMENT_CANCELLED", Map.of(
                 "pgCompany", payment.pgCompany().name(),
                 "pgTransactionId", cancelResult.pgTransactionId()
+        )));
+        return payment;
+    }
+
+    public Payment handleWebhook(HandleWebhookCommand command) {
+        PaymentGateway gateway = gatewayRegistry.get(command.pgCompany());
+        WebhookResult webhookResult = gateway.parseWebhook(new WebhookPayload(command.headers(), command.body()));
+
+        Payment payment = paymentRepository.findByOrderId(webhookResult.orderId())
+                .orElseThrow(() -> new IllegalArgumentException("Payment not found for orderId: " + webhookResult.orderId()));
+
+        switch (webhookResult.targetStatus()) {
+            case APPROVED -> payment.approve(webhookResult.pgTransactionId());
+            case FAILED -> payment.fail();
+            case CANCELLED -> payment.cancel();
+            default -> throw new IllegalArgumentException("Unsupported webhook target status: " + webhookResult.targetStatus());
+        }
+
+        paymentRepository.save(payment);
+        eventPublisher.publish(PaymentEvent.of(payment, "PAYMENT_WEBHOOK_RECONCILED", Map.of(
+                "pgCompany", payment.pgCompany().name(),
+                "pgTransactionId", webhookResult.pgTransactionId(),
+                "status", webhookResult.targetStatus().name()
         )));
         return payment;
     }

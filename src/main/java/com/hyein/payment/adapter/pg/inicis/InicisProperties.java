@@ -6,6 +6,7 @@ public record InicisProperties(
         String checkoutUrl,
         String approveUrl,
         String cancelUrl,
-        String netCancelUrl
+        String netCancelUrl,
+        String webhookUrl
 ) {
 }
